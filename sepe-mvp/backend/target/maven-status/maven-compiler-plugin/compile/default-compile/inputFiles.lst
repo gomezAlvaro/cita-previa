@@ -1,0 +1,6 @@
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/model/OfficeAvailability.java
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/SepeMvpApplication.java
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/model/ProvinceStatus.java
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/controller/SepeStatusController.java
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/model/AppointmentRequest.java
+/workspace/sepe-mvp/backend/src/main/java/com/sepe/mvp/service/SepeStatusService.java

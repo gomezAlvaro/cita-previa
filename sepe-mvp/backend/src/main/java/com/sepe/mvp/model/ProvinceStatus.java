@@ -3,7 +3,7 @@ package com.sepe.mvp.model;
 public class ProvinceStatus {
     private String code;
     private String name;
-    private String status; // AVAILABLE, BUSY, UNKNOWN
+    private String status;
     private long responseTimeMs;
     private long timestamp;
     private String bookingUrl;
@@ -19,7 +19,6 @@ public class ProvinceStatus {
         this.bookingUrl = bookingUrl;
     }
 
-    // Getters and Setters
     public String getCode() { return code; }
     public void setCode(String code) { this.code = code; }
     public String getName() { return name; }
