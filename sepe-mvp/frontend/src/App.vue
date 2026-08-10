@@ -1,43 +1,84 @@
 <template>
   <div class="container">
     <header>
-      <h1>📅 SEPE Cita Previa - Estado</h1>
-      <p class="subtitle">Monitor de disponibilidad por provincia</p>
-      <button @click="refreshStatus" :disabled="loading" class="refresh-btn">
-        {{ loading ? 'Cargando...' : '🔄 Actualizar' }}
-      </button>
+      <h1>📅 SEPE Cita Previa - Buscador</h1>
+      <p class="subtitle">Encuentra citas disponibles cerca de tu código postal</p>
     </header>
 
-    <div v-if="lastUpdate" class="last-update">
-      Última actualización: {{ new Date(lastUpdate).toLocaleTimeString() }}
+    <div class="search-form">
+      <div class="form-group">
+        <label for="dni">DNI/NIE:</label>
+        <input 
+          type="text" 
+          id="dni" 
+          v-model="form.dni" 
+          placeholder="12345678A"
+          maxlength="9"
+        />
+      </div>
+      
+      <div class="form-group">
+        <label for="postalCode">Código Postal:</label>
+        <input 
+          type="text" 
+          id="postalCode" 
+          v-model="form.postalCode" 
+          placeholder="28001"
+          maxlength="5"
+          pattern="[0-9]{5}"
+        />
+      </div>
+      
+      <div class="form-group">
+        <label for="appointmentType">Tipo de Cita:</label>
+        <select id="appointmentType" v-model="form.appointmentType">
+          <option value="PRESENCIAL">Presencial</option>
+          <option value="TELEFONICA">Telefónica</option>
+        </select>
+      </div>
+      
+      <button @click="searchAppointments" :disabled="loading" class="search-btn">
+        {{ loading ? 'Buscando...' : '🔍 Buscar Citas' }}
+      </button>
     </div>
 
-    <div class="grid">
-      <div 
-        v-for="province in provinces" 
-        :key="province.code" 
-        class="card"
-        :class="province.status.toLowerCase()"
-      >
-        <div class="status-indicator"></div>
-        <h3>{{ province.name }}</h3>
-        <span class="status-badge">{{ getStatusText(province.status) }}</span>
-        <div class="response-time" v-if="province.responseTimeMs > 0">
-          ⏱ {{ province.responseTimeMs }}ms
-        </div>
-        <a 
-          :href="province.bookingUrl" 
-          target="_blank" 
-          rel="noopener noreferrer"
-          class="booking-link"
-        >
-          Ir a Cita Previa →
-        </a>
-      </div>
+    <div v-if="loading" class="loading">
+      ⏳ Buscando disponibilidad en oficinas cercanas...
     </div>
 
     <div v-if="error" class="error">
       {{ error }}
+    </div>
+
+    <div v-if="results.length > 0" class="results">
+      <h2>📍 Oficinas con Disponibilidad</h2>
+      <div class="results-grid">
+        <div 
+          v-for="(office, index) in results" 
+          :key="index" 
+          class="result-card"
+          :class="{ available: office.hasAppointments }"
+        >
+          <div class="status-dot" :class="office.hasAppointments ? 'green' : 'red'"></div>
+          <h3>{{ office.officeName }}</h3>
+          <p class="province">{{ office.province }}</p>
+          <p class="address" v-if="office.address">{{ office.address }}</p>
+          <p class="distance" v-if="office.distance">📏 {{ office.distance }}</p>
+          <a 
+            :href="office.bookingUrl" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            class="booking-btn"
+          >
+            Reservar Cita →
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="!loading && results.length === 0 && searched" class="no-results">
+      😞 No se encontraron oficinas con disponibilidad cercana.
+      <p class="tip">Prueba con un código postal diferente o revisa más tarde.</p>
     </div>
   </div>
 </template>
@@ -47,40 +88,48 @@ export default {
   name: 'App',
   data() {
     return {
-      provinces: [],
+      form: {
+        dni: '',
+        postalCode: '',
+        appointmentType: 'PRESENCIAL'
+      },
+      results: [],
       loading: false,
       error: null,
-      lastUpdate: null
+      searched: false
     }
   },
-  mounted() {
-    this.refreshStatus()
-  },
   methods: {
-    async refreshStatus() {
-      this.loading = true
-      this.error = null
+    async searchAppointments() {
+      if (!this.form.postalCode || this.form.postalCode.length !== 5) {
+        this.error = 'Por favor, introduce un código postal válido (5 dígitos)';
+        return;
+      }
+
+      this.loading = true;
+      this.error = null;
+      this.searched = false;
+      this.results = [];
       
       try {
-        const response = await fetch('/api/status')
-        if (!response.ok) throw new Error('Error al cargar datos')
+        const response = await fetch('/api/find-appointments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(this.form)
+        });
         
-        this.provinces = await response.json()
-        this.lastUpdate = Date.now()
+        if (!response.ok) throw new Error('Error al buscar citas');
+        
+        this.results = await response.json();
+        this.searched = true;
       } catch (err) {
-        this.error = 'No se pudo conectar con el servidor. Asegúrate de que el backend está ejecutándose.'
-        console.error(err)
+        this.error = 'No se pudo conectar con el servidor.';
+        console.error(err);
       } finally {
-        this.loading = false
+        this.loading = false;
       }
-    },
-    getStatusText(status) {
-      const texts = {
-        'AVAILABLE': '✅ Disponible',
-        'BUSY': '❌ Saturado',
-        'UNKNOWN': '⚠️ Desconocido'
-      }
-      return texts[status] || status
     }
   }
 }
@@ -100,7 +149,7 @@ body {
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 800px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -117,10 +166,45 @@ h1 {
 
 .subtitle {
   color: #666;
-  margin-bottom: 20px;
 }
 
-.refresh-btn {
+.search-form {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 24px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  color: #444;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+}
+
+.search-btn {
+  width: 100%;
   background: #007bff;
   color: white;
   border: none;
@@ -129,124 +213,22 @@ h1 {
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.2s;
+  font-weight: 500;
 }
 
-.refresh-btn:hover:not(:disabled) {
+.search-btn:hover:not(:disabled) {
   background: #0056b3;
 }
 
-.refresh-btn:disabled {
+.search-btn:disabled {
   background: #ccc;
   cursor: not-allowed;
 }
 
-.last-update {
+.loading {
   text-align: center;
-  color: #666;
-  margin-bottom: 20px;
-  font-size: 0.9rem;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 16px;
-}
-
-.card {
-  background: white;
-  border-radius: 8px;
   padding: 20px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  position: relative;
-  overflow: hidden;
-}
-
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-}
-
-.card.available::before {
-  background: #28a745;
-}
-
-.card.busy::before {
-  background: #dc3545;
-}
-
-.card.unknown::before {
-  background: #ffc107;
-}
-
-.status-indicator {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  margin-bottom: 12px;
-}
-
-.available .status-indicator {
-  background: #28a745;
-}
-
-.busy .status-indicator {
-  background: #dc3545;
-}
-
-.unknown .status-indicator {
-  background: #ffc107;
-}
-
-.card h3 {
-  font-size: 1.1rem;
-  margin-bottom: 8px;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: 500;
-  margin-bottom: 8px;
-}
-
-.available .status-badge {
-  background: #d4edda;
-  color: #155724;
-}
-
-.busy .status-badge {
-  background: #f8d7da;
-  color: #721c24;
-}
-
-.unknown .status-badge {
-  background: #fff3cd;
-  color: #856404;
-}
-
-.response-time {
-  font-size: 0.8rem;
   color: #666;
-  margin-bottom: 12px;
-}
-
-.booking-link {
-  display: inline-block;
-  color: #007bff;
-  text-decoration: none;
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-
-.booking-link:hover {
-  text-decoration: underline;
 }
 
 .error {
@@ -254,7 +236,105 @@ h1 {
   color: #721c24;
   padding: 16px;
   border-radius: 6px;
-  margin-top: 20px;
+  margin-bottom: 20px;
   text-align: center;
+}
+
+.results {
+  margin-top: 20px;
+}
+
+.results h2 {
+  margin-bottom: 16px;
+  font-size: 1.5rem;
+}
+
+.results-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.result-card {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  position: relative;
+  padding-left: 50px;
+}
+
+.result-card.available {
+  border-left: 4px solid #28a745;
+}
+
+.status-dot {
+  position: absolute;
+  left: 16px;
+  top: 20px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+
+.status-dot.green {
+  background: #28a745;
+}
+
+.status-dot.red {
+  background: #dc3545;
+}
+
+.result-card h3 {
+  font-size: 1.1rem;
+  margin-bottom: 4px;
+}
+
+.result-card .province {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.result-card .address {
+  font-size: 0.85rem;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.result-card .distance {
+  font-size: 0.85rem;
+  color: #007bff;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.booking-btn {
+  display: inline-block;
+  background: #007bff;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.booking-btn:hover {
+  background: #0056b3;
+}
+
+.no-results {
+  text-align: center;
+  padding: 40px 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.no-results .tip {
+  margin-top: 12px;
+  color: #666;
+  font-size: 0.9rem;
 }
 </style>
