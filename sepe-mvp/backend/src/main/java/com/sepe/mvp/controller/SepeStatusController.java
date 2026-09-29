@@ -1,10 +1,12 @@
 package com.sepe.mvp.controller;
 
 import com.sepe.mvp.model.AppointmentRequest;
-import com.sepe.mvp.model.OfficeAvailability;
 import com.sepe.mvp.model.ProvinceStatus;
+import com.sepe.mvp.model.SearchResult;
 import com.sepe.mvp.service.SepeStatusService;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -24,7 +26,11 @@ public class SepeStatusController {
     }
 
     @PostMapping("/find-appointments")
-    public List<OfficeAvailability> findAppointments(@RequestBody AppointmentRequest request) {
-        return sepeStatusService.findAvailableOffices(request);
+    public List<SearchResult> findAppointments(@RequestBody AppointmentRequest request) {
+        try {
+            return sepeStatusService.findProvincesForPostalCode(request.getPostalCode());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 }

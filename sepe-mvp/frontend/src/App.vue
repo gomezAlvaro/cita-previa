@@ -2,21 +2,10 @@
   <div class="container">
     <header>
       <h1>📅 SEPE Cita Previa - Buscador</h1>
-      <p class="subtitle">Encuentra citas disponibles cerca de tu código postal</p>
+      <p class="subtitle">Consulta el estado del portal de cita previa del SEPE para tu código postal</p>
     </header>
 
     <div class="search-form">
-      <div class="form-group">
-        <label for="dni">DNI/NIE:</label>
-        <input 
-          type="text" 
-          id="dni" 
-          v-model="form.dni" 
-          placeholder="12345678A"
-          maxlength="9"
-        />
-      </div>
-      
       <div class="form-group">
         <label for="postalCode">Código Postal:</label>
         <input 
@@ -25,16 +14,10 @@
           v-model="form.postalCode" 
           placeholder="28001"
           maxlength="5"
+          inputmode="numeric"
           pattern="[0-9]{5}"
+          @keyup.enter="searchAppointments"
         />
-      </div>
-      
-      <div class="form-group">
-        <label for="appointmentType">Tipo de Cita:</label>
-        <select id="appointmentType" v-model="form.appointmentType">
-          <option value="PRESENCIAL">Presencial</option>
-          <option value="TELEFONICA">Telefónica</option>
-        </select>
       </div>
       
       <button @click="searchAppointments" :disabled="loading" class="search-btn">
@@ -51,35 +34,34 @@
     </div>
 
     <div v-if="results.length > 0" class="results">
-      <h2>📍 Oficinas con Disponibilidad</h2>
+      <h2>📍 Provincias para tu código postal</h2>
+      <p class="disclaimer">
+        El SEPE gestiona la cita previa en un único portal. Esta herramienta indica si el
+        portal responde ahora mismo; <strong>no puede confirmar si hay citas libres</strong>.
+      </p>
       <div class="results-grid">
-        <div 
-          v-for="(office, index) in results" 
-          :key="index" 
+        <div
+          v-for="result in results"
+          :key="result.provinceCode"
           class="result-card"
-          :class="{ available: office.hasAppointments }"
+          :class="statusClass(result.portalStatus)"
         >
-          <div class="status-dot" :class="office.hasAppointments ? 'green' : 'red'"></div>
-          <h3>{{ office.officeName }}</h3>
-          <p class="province">{{ office.province }}</p>
-          <p class="address" v-if="office.address">{{ office.address }}</p>
-          <p class="distance" v-if="office.distance">📏 {{ office.distance }}</p>
-          <a 
-            :href="office.bookingUrl" 
-            target="_blank" 
+          <div class="status-dot" :class="statusClass(result.portalStatus)"></div>
+          <h3>{{ result.provinceName }}</h3>
+          <p class="province">{{ result.nearby ? 'Provincia cercana' : 'Tu provincia' }}</p>
+          <p class="portal-status">{{ statusLabel(result.portalStatus) }}</p>
+          <a
+            :href="result.bookingUrl"
+            target="_blank"
             rel="noopener noreferrer"
             class="booking-btn"
           >
-            Reservar Cita →
+            Ir a la web del SEPE →
           </a>
         </div>
       </div>
     </div>
 
-    <div v-if="!loading && results.length === 0 && searched" class="no-results">
-      😞 No se encontraron oficinas con disponibilidad cercana.
-      <p class="tip">Prueba con un código postal diferente o revisa más tarde.</p>
-    </div>
   </div>
 </template>
 
@@ -89,9 +71,7 @@ export default {
   data() {
     return {
       form: {
-        dni: '',
-        postalCode: '',
-        appointmentType: 'PRESENCIAL'
+        postalCode: ''
       },
       results: [],
       loading: false,
@@ -100,6 +80,21 @@ export default {
     }
   },
   methods: {
+    statusClass(status) {
+      if (status === 'OK') return 'green';
+      if (status === 'SLOW') return 'amber';
+      return 'red';
+    },
+    statusLabel(status) {
+      const labels = {
+        OK: 'Portal del SEPE operativo',
+        SLOW: 'Portal del SEPE lento (posible saturación)',
+        BLOCKED: 'El SEPE ha bloqueado la consulta; inténtalo más tarde',
+        DOWN: 'Portal del SEPE con errores',
+        UNREACHABLE: 'No se pudo conectar con el portal del SEPE'
+      };
+      return labels[status] || 'Estado desconocido';
+    },
     async searchAppointments() {
       if (!this.form.postalCode || this.form.postalCode.length !== 5) {
         this.error = 'Por favor, introduce un código postal válido (5 dígitos)';
@@ -120,8 +115,12 @@ export default {
           body: JSON.stringify(this.form)
         });
         
+        if (response.status === 400) {
+          this.error = 'Código postal no válido. Comprueba que tiene 5 dígitos y es de España.';
+          return;
+        }
         if (!response.ok) throw new Error('Error al buscar citas');
-        
+
         this.results = await response.json();
         this.searched = true;
       } catch (err) {
@@ -263,8 +262,31 @@ h1 {
   padding-left: 50px;
 }
 
-.result-card.available {
+.result-card.green {
   border-left: 4px solid #28a745;
+}
+
+.result-card.amber {
+  border-left: 4px solid #ffc107;
+}
+
+.result-card.red {
+  border-left: 4px solid #dc3545;
+}
+
+.disclaimer {
+  background: #fff3cd;
+  color: #664d03;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.portal-status {
+  font-size: 0.9rem;
+  color: #444;
+  margin-bottom: 12px;
 }
 
 .status-dot {
@@ -278,6 +300,10 @@ h1 {
 
 .status-dot.green {
   background: #28a745;
+}
+
+.status-dot.amber {
+  background: #ffc107;
 }
 
 .status-dot.red {

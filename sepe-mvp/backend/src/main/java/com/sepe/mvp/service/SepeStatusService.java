@@ -1,236 +1,215 @@
 package com.sepe.mvp.service;
 
-import com.sepe.mvp.model.AppointmentRequest;
-import com.sepe.mvp.model.OfficeAvailability;
+import com.sepe.mvp.model.PortalCheck;
+import com.sepe.mvp.model.PortalStatus;
 import com.sepe.mvp.model.ProvinceStatus;
-import org.springframework.cache.annotation.Cacheable;
+import com.sepe.mvp.model.SearchResult;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 
+/**
+ * Checks the state of the SEPE cita previa portal and maps postal codes to provinces.
+ *
+ * SEPE serves all provinces from one portal, so the portal is probed once and the
+ * result is shared. The probe result is cached for {@link #CACHE_TTL_MS}, which also
+ * caps how often this app can hit SEPE (at most one request per minute), no matter
+ * how many users call the API.
+ */
 @Service
 public class SepeStatusService {
 
+    static final String PORTAL_URL = "https://sede.sepe.gob.es/portalSede";
+    static final String BOOKING_URL = "https://sede.sepe.gob.es/portalSede/es/Personas/CitaPrevia";
+    static final long CACHE_TTL_MS = 60_000;
+    private static final long SLOW_THRESHOLD_MS = 2_000;
+
+    /** INE province codes, in code order. */
+    private static final Map<String, String> PROVINCES = new LinkedHashMap<>();
+    /** Neighbouring provinces (by code) worth suggesting if the user's own one is busy. */
+    private static final Map<String, List<String>> NEARBY_PROVINCES = new LinkedHashMap<>();
+
+    static {
+        String[] names = {
+            "01=Álava", "02=Albacete", "03=Alicante", "04=Almería", "05=Ávila",
+            "06=Badajoz", "07=Baleares", "08=Barcelona", "09=Burgos", "10=Cáceres",
+            "11=Cádiz", "12=Castellón", "13=Ciudad Real", "14=Córdoba", "15=A Coruña",
+            "16=Cuenca", "17=Girona", "18=Granada", "19=Guadalajara", "20=Gipuzkoa",
+            "21=Huelva", "22=Huesca", "23=Jaén", "24=León", "25=Lleida",
+            "26=La Rioja", "27=Lugo", "28=Madrid", "29=Málaga", "30=Murcia",
+            "31=Navarra", "32=Ourense", "33=Asturias", "34=Palencia", "35=Las Palmas",
+            "36=Pontevedra", "37=Salamanca", "38=Santa Cruz de Tenerife", "39=Cantabria", "40=Segovia",
+            "41=Sevilla", "42=Soria", "43=Tarragona", "44=Teruel", "45=Toledo",
+            "46=Valencia", "47=Valladolid", "48=Bizkaia", "49=Zamora", "50=Zaragoza",
+            "51=Ceuta", "52=Melilla"
+        };
+        for (String entry : names) {
+            String[] parts = entry.split("=", 2);
+            PROVINCES.put(parts[0], parts[1]);
+        }
+
+        neighbours("01", "48,20,31,26,09");
+        neighbours("02", "16,13,46,03,30,23");
+        neighbours("03", "46,30,02");
+        neighbours("04", "18,30,23");
+        neighbours("05", "40,28,45,37,47");
+        neighbours("06", "10,41,21,14,13");
+        neighbours("07", "");
+        neighbours("08", "43,17,25");
+        neighbours("09", "34,39,01,26,42,40,47,48");
+        neighbours("10", "06,37,05,45");
+        neighbours("11", "41,29,21");
+        neighbours("12", "46,43,44");
+        neighbours("13", "45,02,23,14,06,16");
+        neighbours("14", "41,29,18,23,13,06");
+        neighbours("15", "36,27");
+        neighbours("16", "19,02,46,13,45");
+        neighbours("17", "08");
+        neighbours("18", "29,23,04,14");
+        neighbours("19", "28,16,42,40");
+        neighbours("20", "48,01,31");
+        neighbours("21", "41,06,11");
+        neighbours("22", "50,25,31");
+        neighbours("23", "13,14,18,02");
+        neighbours("24", "33,34,47,49,27,32");
+        neighbours("25", "08,43,22");
+        neighbours("26", "01,31,09,42,50");
+        neighbours("27", "15,33,24,32,36");
+        neighbours("28", "45,40,19,05,16");
+        neighbours("29", "11,41,14,18");
+        neighbours("30", "03,02,04,18");
+        neighbours("31", "01,20,22,50,26");
+        neighbours("32", "36,27,24,49");
+        neighbours("33", "39,24,27");
+        neighbours("34", "09,39,24,47");
+        neighbours("35", "38");
+        neighbours("36", "15,27,32");
+        neighbours("37", "10,05,49,47");
+        neighbours("38", "35");
+        neighbours("39", "33,34,09,48");
+        neighbours("40", "05,28,47,09,19");
+        neighbours("41", "11,14,21,29,06");
+        neighbours("42", "09,26,50,19,40");
+        neighbours("43", "08,25,12,44");
+        neighbours("44", "50,43,12,46,16,19");
+        neighbours("45", "28,13,10,05,06,16");
+        neighbours("46", "12,03,44,16,02");
+        neighbours("47", "40,34,49,05,37,09,24");
+        neighbours("48", "20,01,39");
+        neighbours("49", "47,37,24,32");
+        neighbours("50", "22,44,42,31,26");
+        neighbours("51", "");
+        neighbours("52", "");
+    }
+
+    private static void neighbours(String code, String csv) {
+        NEARBY_PROVINCES.put(code, csv.isEmpty() ? List.of() : Arrays.asList(csv.split(",")));
+    }
+
     private final HttpClient httpClient;
-    
-    private static final Map<String, String> POSTAL_CODE_TO_PROVINCE = new HashMap<>();
-    
-    static {
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("28%03d", i), "28");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("08%03d", i), "08");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("46%03d", i), "46");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("41%03d", i), "41");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("50%03d", i), "50");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("29%03d", i), "29");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("30%03d", i), "30");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("07%03d", i), "07");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("35%03d", i), "35");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("48%03d", i), "48");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("03%03d", i), "03");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("14%03d", i), "14");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("47%03d", i), "47");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("36%03d", i), "36");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("33%03d", i), "33");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("18%03d", i), "18");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("01%03d", i), "01");
-        for (int i = 0; i <= 999; i++) POSTAL_CODE_TO_PROVINCE.put(String.format("38%03d", i), "38");
-    }
-
-    private static final String[] PROVINCES = {
-        "01-Alava", "02-Albacete", "03-Alicante", "04-Almeria", "05-Avila",
-        "06-Badajoz", "07-Baleares", "08-Barcelona", "09-Burgos", "10-Caceres",
-        "11-Cadiz", "12-Castellon", "13-Ciudad Real", "14-Cordoba", "15-Coruna",
-        "16-Cuenca", "17-Girona", "18-Granada", "19-Guadalajara", "20-Gipuzkoa",
-        "21-Huelva", "22-Huesca", "23-Jaen", "24-Leon", "25-Lleida", "26-Rioja",
-        "27-Lugo", "28-Madrid", "29-Malaga", "30-Murcia", "31-Navarra", "32-Ourense",
-        "33-Asturias", "34-Palencia", "35-Las Palmas", "36-Pontevedra", "37-Salamanca",
-        "38-Santa Cruz de Tenerife", "39-Cantabria", "40-Segovia", "41-Sevilla",
-        "42-Soria", "43-Tarragona", "44-Teruel", "45-Toledo", "46-Valencia",
-        "47-Valladolid", "48-Zamora", "49-Zaragoza", "51-Ceuta", "52-Melilla"
-    };
-
-    private static final Map<String, List<String>> NEARBY_PROVINCES = new HashMap<>();
-    static {
-        NEARBY_PROVINCES.put("28", List.of("45", "40", "19", "47"));
-        NEARBY_PROVINCES.put("08", List.of("43", "17", "25"));
-        NEARBY_PROVINCES.put("46", List.of("12", "03", "30"));
-        NEARBY_PROVINCES.put("41", List.of("11", "14", "29"));
-        NEARBY_PROVINCES.put("50", List.of("22", "44", "31"));
-        NEARBY_PROVINCES.put("29", List.of("11", "18", "04"));
-        NEARBY_PROVINCES.put("30", List.of("03", "12", "04"));
-        NEARBY_PROVINCES.put("07", List.of());
-        NEARBY_PROVINCES.put("35", List.of("38"));
-        NEARBY_PROVINCES.put("48", List.of("20", "39"));
-        NEARBY_PROVINCES.put("03", List.of("46", "12", "30"));
-        NEARBY_PROVINCES.put("14", List.of("41", "11", "29"));
-        NEARBY_PROVINCES.put("47", List.of("40", "28", "49"));
-        NEARBY_PROVINCES.put("36", List.of("15", "27", "32"));
-        NEARBY_PROVINCES.put("33", List.of("24", "39"));
-        NEARBY_PROVINCES.put("38", List.of("35"));
-        NEARBY_PROVINCES.put("01", List.of("48", "20"));
-        NEARBY_PROVINCES.put("11", List.of("41", "14", "29"));
-        NEARBY_PROVINCES.put("18", List.of("29", "04", "23"));
-    }
+    private PortalCheck cachedCheck;
 
     public SepeStatusService() {
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(3))
+            .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
     }
 
-    @Cacheable(value = "provinceStatuses")
+    /** Status of every province. All share the same value because SEPE has a single portal. */
     public List<ProvinceStatus> getAllProvincesStatus() {
+        PortalCheck check = checkPortal();
         List<ProvinceStatus> statuses = new ArrayList<>();
-        for (String province : PROVINCES) {
-            statuses.add(checkProvince(province));
+        for (Map.Entry<String, String> province : PROVINCES.entrySet()) {
+            statuses.add(new ProvinceStatus(
+                province.getKey(),
+                province.getValue(),
+                check.status().name(),
+                check.responseTimeMs(),
+                check.timestamp(),
+                BOOKING_URL));
         }
         return statuses;
     }
 
-    public List<OfficeAvailability> findAvailableOffices(AppointmentRequest request) {
-        String postalCode = request.getPostalCode();
-        String provinceCode = POSTAL_CODE_TO_PROVINCE.get(postalCode);
-        
-        if (provinceCode == null) {
-            provinceCode = inferProvinceFromPostalCode(postalCode);
+    /**
+     * Provinces to try for a postal code: its own province first, then its neighbours.
+     *
+     * @throws IllegalArgumentException if the postal code is not 5 digits or has no known province
+     */
+    public List<SearchResult> findProvincesForPostalCode(String postalCode) {
+        String provinceCode = provinceCodeForPostalCode(postalCode);
+        PortalStatus status = checkPortal().status();
+
+        List<SearchResult> results = new ArrayList<>();
+        results.add(new SearchResult(provinceCode, PROVINCES.get(provinceCode), false, status, BOOKING_URL));
+        for (String nearbyCode : NEARBY_PROVINCES.getOrDefault(provinceCode, List.of())) {
+            results.add(new SearchResult(nearbyCode, PROVINCES.get(nearbyCode), true, status, BOOKING_URL));
         }
-        
-        List<OfficeAvailability> results = new ArrayList<>();
-        
-        if (provinceCode != null) {
-            String provinceName = getProvinceName(provinceCode);
-            
-            boolean localAvailable = checkProvinceStatus(provinceCode);
-            OfficeAvailability localOffice = new OfficeAvailability(
-                "Oficina Principal " + provinceName,
-                provinceName,
-                "Calle Principal, " + postalCode,
-                localAvailable,
-                "0 km",
-                "https://sede.sepe.gob.es/portalSede/es/Personas/CitaPrevia"
-            );
-            results.add(localOffice);
-            
-            List<String> nearbyCodes = NEARBY_PROVINCES.getOrDefault(provinceCode, List.of());
-            for (String nearbyCode : nearbyCodes) {
-                boolean available = checkProvinceStatus(nearbyCode);
-                if (available) {
-                    OfficeAvailability nearby = new OfficeAvailability(
-                        "Oficina " + getProvinceName(nearbyCode),
-                        getProvinceName(nearbyCode),
-                        "Centro Ciudad",
-                        true,
-                        calculateDistance(provinceCode, nearbyCode),
-                        "https://sede.sepe.gob.es/portalSede/es/Personas/CitaPrevia"
-                    );
-                    results.add(nearby);
-                }
-            }
-        } else {
-            for (String province : PROVINCES) {
-                String code = province.substring(0, 2);
-                if (checkProvinceStatus(code)) {
-                    results.add(new OfficeAvailability(
-                        "Oficina " + province.substring(3),
-                        province.substring(3),
-                        "Varias ubicaciones",
-                        true,
-                        "-",
-                        "https://sede.sepe.gob.es/portalSede/es/Personas/CitaPrevia"
-                    ));
-                }
-            }
-        }
-        
         return results;
     }
 
-    private String inferProvinceFromPostalCode(String postalCode) {
-        if (postalCode.length() >= 2) {
-            String prefix = postalCode.substring(0, 2);
-            for (String province : PROVINCES) {
-                if (province.startsWith(prefix + "-")) {
-                    return prefix;
-                }
-            }
+    /** Province code (first two digits) for a Spanish postal code. */
+    static String provinceCodeForPostalCode(String postalCode) {
+        if (postalCode == null || !postalCode.matches("\\d{5}")) {
+            throw new IllegalArgumentException("El código postal debe tener 5 dígitos");
         }
-        return null;
+        String code = postalCode.substring(0, 2);
+        if (!PROVINCES.containsKey(code)) {
+            throw new IllegalArgumentException("Código postal desconocido: " + postalCode);
+        }
+        return code;
     }
 
-    private String getProvinceName(String code) {
-        for (String province : PROVINCES) {
-            if (province.startsWith(code + "-")) {
-                return province.substring(3);
-            }
+    /** Probes the portal, at most once per {@link #CACHE_TTL_MS}. */
+    synchronized PortalCheck checkPortal() {
+        long now = System.currentTimeMillis();
+        if (cachedCheck == null || now - cachedCheck.timestamp() >= CACHE_TTL_MS) {
+            cachedCheck = probePortal();
         }
-        return "Desconocida";
+        return cachedCheck;
     }
 
-    private boolean checkProvinceStatus(String provinceCode) {
-        String url = "https://sede.sepe.gob.es/portalSede";
+    /** Performs one real request to the SEPE portal. Overridden in tests. */
+    PortalCheck probePortal() {
+        long start = System.currentTimeMillis();
+        PortalStatus status;
         try {
             HttpRequest request = HttpRequest.newBuilder()
-                .uri(java.net.URI.create(url))
-                .method("HEAD", HttpRequest.BodyPublishers.noBody())
-                .timeout(Duration.ofSeconds(2))
+                .uri(URI.create(PORTAL_URL))
+                .GET()
+                .timeout(Duration.ofSeconds(5))
                 .header("User-Agent", "Mozilla/5.0")
                 .build();
-            
             HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            return response.statusCode() == 200;
+            long elapsed = System.currentTimeMillis() - start;
+            status = classify(response.statusCode(), elapsed);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            status = PortalStatus.UNREACHABLE;
         } catch (Exception e) {
-            return false;
+            status = PortalStatus.UNREACHABLE;
         }
+        long end = System.currentTimeMillis();
+        return new PortalCheck(status, end - start, end);
     }
 
-    private ProvinceStatus checkProvince(String province) {
-        String code = province.substring(0, 2);
-        String name = province.substring(3);
-        String url = "https://sede.sepe.gob.es/portalSede";
-        String bookingUrl = "https://sede.sepe.gob.es/portalSede/es/Personas/CitaPrevia";
-        
-        long startTime = System.currentTimeMillis();
-        String status = "UNKNOWN";
-        long responseTime = 0;
-        
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(java.net.URI.create(url))
-                .method("HEAD", HttpRequest.BodyPublishers.noBody())
-                .timeout(Duration.ofSeconds(3))
-                .header("User-Agent", "Mozilla/5.0")
-                .build();
-            
-            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            responseTime = System.currentTimeMillis() - startTime;
-            int statusCode = response.statusCode();
-            
-            if (statusCode == 200 && responseTime < 2000) {
-                status = "AVAILABLE";
-            } else if (statusCode >= 500 || responseTime > 5000 || statusCode == 503 || statusCode == 504) {
-                status = "BUSY";
-            }
-        } catch (Exception e) {
-            responseTime = System.currentTimeMillis() - startTime;
+    static PortalStatus classify(int httpStatus, long elapsedMs) {
+        if (httpStatus == 403 || httpStatus == 429) {
+            return PortalStatus.BLOCKED;
         }
-        
-        return new ProvinceStatus(code, name, status, responseTime, System.currentTimeMillis(), bookingUrl);
-    }
-
-    private String calculateDistance(String from, String to) {
-        int fromInt = Integer.parseInt(from);
-        int toInt = Integer.parseInt(to);
-        int diff = Math.abs(fromInt - toInt);
-        if (diff < 10) return "5-15 km";
-        if (diff < 20) return "15-30 km";
-        if (diff < 30) return "30-50 km";
-        return "50+ km";
+        if (httpStatus >= 200 && httpStatus < 400) {
+            return elapsedMs < SLOW_THRESHOLD_MS ? PortalStatus.OK : PortalStatus.SLOW;
+        }
+        return PortalStatus.DOWN;
     }
 }

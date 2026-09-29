@@ -6,6 +6,9 @@ This review covers the two planning documents (`PROJECT_PLAN.md`, `SEPE_MVP_PLAN
 
 ---
 
+> **Status update (2026-09-29):** housekeeping and correctness items from section 3 (all except the
+> availability detection in item 1) were fixed in the follow-up commit on `main`. See section 8.
+
 ## 1. Summary
 
 | | Verdict |
@@ -122,3 +125,24 @@ The following stay out until the MVP proves useful, in line with `SEPE_MVP_PLAN.
 
 - Backend compilation could not be verified in the review environment (Maven Central was not reachable). The code was reviewed by reading.
 - Nothing was tested against the live SEPE site.
+
+---
+
+## 8. Fixed after this review
+
+| # | Item | Change |
+|---|---|---|
+| 1 | Availability = homepage is up | Made honest, not solved: the API now reports portal status (`OK/SLOW/BLOCKED/DOWN/UNREACHABLE`), the UI says it cannot confirm free appointments. Real slot detection is still the spike in section 4. |
+| 2 | Fabricated offices/addresses/distances | Removed. Results are provinces (own + neighbours) with a link to SEPE. |
+| 3 | Port mismatch | Backend now on 8081, matching Vite proxy and README. |
+| 4 | Broken `mvnw` | Removed the wrapper; README uses `mvn`. |
+| 5 | Wrong province codes | 48 Bizkaia, 49 Zamora, 50 Zaragoza; 52 provinces. |
+| 6-7 | Unused DNI / appointment type | Removed from form, API and README. |
+| 8 | Slow sequential checks | One shared portal probe per request window. |
+| 9 | No throttling | Probe cached 60 s: at most 1 SEPE request per minute. |
+| 10 | 18,000-entry postal map | Replaced by first-two-digits lookup with validation (400 on bad input). |
+| 11 | No error distinction | `BLOCKED` (403/429), `DOWN`, `UNREACHABLE`, `SLOW` reported separately. |
+| 12-14 | `target/`, `touch`, duplicate wrapper jars | Removed. |
+| 15 | No tests | Added service and controller tests (`mvn test`). |
+
+Still open: item 1 (real slot detection) and item 16 (`docker-compose.yml`).
